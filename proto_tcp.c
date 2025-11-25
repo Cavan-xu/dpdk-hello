@@ -229,19 +229,50 @@ int ng_tcp_accept(int fd, struct sockaddr *addr, __attribute__((unused)) socklen
     return acpt->fd;
 }
 
-int ng_tcp_recv(int fd, void *buf, size_t n, int flags)
+int ng_tcp_recv(int fd, void *buf, size_t n, __attribute__((unused)) int flags)
 {
+    int length = 0;
+
     struct ng_tcp_stream *stream = ng_tcp_stream_search_from_fd(fd);
     if (stream == NULL) {
         return -1;
     }
 
-    return 0;
+    struct ng_tcp_fragment *fragment = NULL;
+
+    int recv = 0;
+    pthread_mutex_lock(&stream->mutex);
+    while ((recv = rte_ring_mc_dequeue(stream->recvbuf, (void **)&fragment)) < 0) {
+        pthread_cond_wait(&stream->cond, &stream->mutex);
+    }
+    pthread_mutex_unlock(&stream->mutex);
+
+    if ((size_t)fragment->length > n) {
+        rte_memcpy(buf, fragment->data, n);
+
+        size_t i = 0;
+        for (i = 0; i < (size_t)fragment->length - n; i++) {
+            fragment->data[i] = fragment->data[n + i];
+        }
+        fragment->length = fragment->length - n;
+        length = n;
+        
+        rte_ring_mp_enqueue(stream->recvbuf, fragment);
+    } else {
+        rte_memcpy(buf, fragment->data, fragment->length);
+        length = fragment->length;
+
+        rte_free(fragment->data);
+        fragment->data = NULL;
+        rte_free(fragment);
+    }
+
+    return length;
 }
 
 int ng_tcp_send(int fd, const void *buf, size_t n, __attribute__((unused)) int flags)
 {
-    size_t length = 0;
+    int length = 0;
 
     struct ng_tcp_stream *stream = ng_tcp_stream_search_from_fd(fd);
     if (stream == NULL) {

@@ -202,35 +202,6 @@ static int ng_tcp_handle_established(struct ng_tcp_stream *stream, struct rte_tc
         ackfragment->data = NULL;
         ackfragment->length = 0;
         rte_ring_mp_enqueue(stream->sendbuf, ackfragment);
-
-        struct ng_tcp_fragment *echofragment = rte_malloc("ng_tcp_fragment", sizeof(struct ng_tcp_fragment), 0);
-        if (echofragment == NULL) {
-            return EXIT_FAILURE;
-        }
-        memset(echofragment, 0, sizeof(struct ng_tcp_fragment));
-
-        echofragment->dport = tcphdr->src_port;
-        echofragment->sport = tcphdr->dst_port;
-        echofragment->acknum = stream->recv_next;
-        echofragment->seqnum = stream->snd_next;
-        echofragment->tcp_flags = RTE_TCP_PSH_FLAG | RTE_TCP_ACK_FLAG;
-        echofragment->win = TCP_INITIAL_WINDOW;
-        echofragment->hdrlen_off = 0x50;
-
-        uint8_t *payload = (uint8_t *)(tcphdr) + hdrlen * 4;
-        echofragment->data = rte_malloc("unsigned char *", payloadlen, 0);
-        if (echofragment->data == NULL) {
-            rte_free(echofragment);
-            return EXIT_FAILURE;
-        }
-        memset(echofragment->data, 0, payloadlen);
-
-        rte_memcpy(echofragment->data, payload, payloadlen);
-        echofragment->length = payloadlen;
-
-        printf("tcp echo data: %s\n", echofragment->data);
-
-        rte_ring_mp_enqueue(stream->sendbuf, echofragment);
     }
 
     if (tcphdr->tcp_flags & RTE_TCP_ACK_FLAG) {
@@ -240,6 +211,10 @@ static int ng_tcp_handle_established(struct ng_tcp_stream *stream, struct rte_tc
     if (tcphdr->tcp_flags & RTE_TCP_FIN_FLAG) {
         stream->status = NG_TCP_STATUS_CLOSE_WAIT;
     }
+
+    pthread_mutex_lock(&stream->mutex);
+    pthread_cond_signal(&stream->cond);
+    pthread_mutex_unlock(&stream->mutex);
 
     return 0;
 }
