@@ -21,3 +21,14 @@ int get_fd_from_bitmap(void)
 
     return -1;
 }
+
+int reset_fd_from_bitmap(int fd)
+{
+    if (fd > MAX_FD_COUNT) {
+        return -1;
+    }
+
+    fd_table[fd / 8] &= ~(1 << (fd % 8));
+    
+    return 0;
+}

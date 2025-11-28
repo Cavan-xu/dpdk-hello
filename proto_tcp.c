@@ -258,6 +258,9 @@ int ng_tcp_recv(int fd, void *buf, size_t n, __attribute__((unused)) int flags)
         length = n;
         
         rte_ring_mp_enqueue(stream->recvbuf, fragment);
+    } else if (fragment->length == 0) {
+        rte_free(fragment);
+        return 0;
     } else {
         rte_memcpy(buf, fragment->data, fragment->length);
         length = fragment->length;
@@ -313,6 +316,31 @@ int ng_tcp_send(int fd, const void *buf, size_t n, __attribute__((unused)) int f
 
 int ng_tcp_close (int fd)
 {
+    struct ng_tcp_stream *stream = ng_tcp_stream_search_from_fd(fd);
+    if (stream == NULL) {
+        return -1;
+    }
+
+    struct ng_tcp_fragment *fragment = rte_malloc("fragment", sizeof(struct ng_tcp_fragment), 0);
+    if (fragment == NULL) {
+        return -1;
+    }
+
+    fragment->data = NULL;
+    fragment->length = 0;
+    fragment->sport = stream->dport;
+    fragment->dport = stream->sport;
+    fragment->seqnum = stream->snd_next;
+    fragment->acknum = stream->recv_next;
+    fragment->tcp_flags = RTE_TCP_FIN_FLAG;
+    fragment->win = TCP_INITIAL_WINDOW;
+    fragment->hdrlen_off = 0x50;
+
+    rte_ring_mp_enqueue(stream->sendbuf, fragment);
+    stream->status = NG_TCP_STATUS_LAST_ACK;
+
+    reset_fd_from_bitmap(fd);
+
     return 0;
 }
 
