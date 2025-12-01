@@ -12,7 +12,7 @@ int get_fd_from_bitmap(void)
     int fd = DEFAULT_FD_NUM;
     for (; fd < MAX_FD_COUNT; fd++) {
         int index = fd / 8;
-        if ((fd_table[index] & (1 << (fd % 8))) == 0) {
+        if ((fd_table[index] & (1 << (fd % 8))) > 0) {
             continue;
         }
         fd_table[index] |= (1 << (fd % 8));
@@ -29,6 +29,6 @@ int reset_fd_from_bitmap(int fd)
     }
 
     fd_table[fd / 8] &= ~(1 << (fd % 8));
-    
+
     return 0;
 }

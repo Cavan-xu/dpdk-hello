@@ -144,8 +144,6 @@ int main(int argc, char *argv[])
         rte_exit(EXIT_FAILURE, "init ring fail\n");
     }
 
-    printf("node: %d\n", rte_socket_id());
-    
     if (ring->inring == NULL) {
         ring->inring = rte_ring_create("inring", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
     }
@@ -159,6 +157,9 @@ int main(int argc, char *argv[])
 
     lcore_id = rte_get_next_lcore(lcore_id, 1, 0);
     rte_eal_remote_launch(pkt_process, mbuf_pool, lcore_id);
+
+    lcore_id = rte_get_next_lcore(lcore_id, 1, 0);
+    rte_eal_remote_launch(tcp_server_entry, mbuf_pool, lcore_id);
 
     while (1) {
         // rx

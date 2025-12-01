@@ -9,6 +9,7 @@
 #include "proto_tcp.h"
 #include "process_arp.h"
 #include "util_ring.h"
+#include "util_linknode.h"
 
 extern uint8_t gDefaultArpMAc[RTE_ETHER_ADDR_LEN];
 
@@ -89,15 +90,16 @@ static int ng_tcp_enqueue_ackpkt(struct ng_tcp_stream *stream, struct rte_tcp_hd
     fragment->sport = tcphdr->dst_port;
     fragment->dport = tcphdr->src_port;
     fragment->seqnum = stream->snd_next;
-    fragment->acknum = ntohl(tcphdr->sent_seq) + 1;
+    fragment->acknum = stream->recv_next;
 
-    fragment->tcp_flags = RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG;
+    fragment->tcp_flags = RTE_TCP_ACK_FLAG;
     fragment->win = TCP_INITIAL_WINDOW;
     fragment->hdrlen_off = 0x50;
     fragment->data = NULL;
     fragment->length = 0;
 
     rte_ring_mp_enqueue(stream->sendbuf, fragment);
+
     return 0;
 }
 
@@ -129,8 +131,6 @@ static int ng_tcp_enqueue_pkt(struct ng_tcp_stream *stream, struct rte_tcp_hdr *
 
         stream->recv_next = stream->recv_next + payloadlen;
         stream->snd_next = ntohl(tcphdr->recv_ack);
-
-        printf("tcp data: %s\n", fragment->data);
     } else if (payloadlen == 0) { // this case is receive fin
         fragment->length = 0;
         fragment->data = NULL;
@@ -139,6 +139,10 @@ static int ng_tcp_enqueue_pkt(struct ng_tcp_stream *stream, struct rte_tcp_hdr *
     }
 
     rte_ring_mp_enqueue(stream->recvbuf, fragment);
+
+    pthread_mutex_lock(&stream->mutex);
+    pthread_cond_signal(&stream->cond);
+    pthread_mutex_unlock(&stream->mutex);
 
     return 0;
 }
@@ -182,18 +186,11 @@ static int ng_tcp_handle_syn_rcvd(struct ng_tcp_stream *stream, struct rte_tcp_h
 {
     if (tcphdr->tcp_flags & RTE_TCP_ACK_FLAG) {
         if (stream->status == NG_TCP_STATUS_SYN_RCVD) {
-            uint32_t acknum = ntohs(tcphdr->recv_ack);
-            if (acknum == stream->snd_next + 1) {
-                
-            }
-
-            stream->status = NG_TCP_STATUS_ESTABLISHED;
-            
             struct ng_tcp_stream *listener_stream = ng_tcp_stream_search(0, 0, 0, stream->dport);
             if (listener_stream == NULL) {
                 rte_exit(EXIT_FAILURE, "get listener stream fail"); // because accpet will block
             }
-            
+
             pthread_mutex_lock(&listener_stream->mutex);
             pthread_cond_signal(&listener_stream->cond);
             pthread_mutex_unlock(&listener_stream->mutex);
@@ -205,45 +202,42 @@ static int ng_tcp_handle_syn_rcvd(struct ng_tcp_stream *stream, struct rte_tcp_h
 
 static int ng_tcp_handle_established(struct ng_tcp_stream *stream, struct rte_tcp_hdr *tcphdr, int length)
 {
-    // uint8_t hdrlen = tcphdr->data_off & 0xF0;
-    // hdrlen >>=4;
-    // uint8_t *payload = (uint8_t *)tcphdr + hdrlen * 4;
-    // printf("payload: %s\n", payload);
-
-
-    if (tcphdr->tcp_flags & RTE_TCP_SYN_FLAG) {
-
-    }
-
     if (tcphdr->tcp_flags & RTE_TCP_PSH_FLAG) {
         ng_tcp_enqueue_pkt(stream, tcphdr, length);
         ng_tcp_enqueue_ackpkt(stream, tcphdr);
-
-    }
-
-    if (tcphdr->tcp_flags & RTE_TCP_ACK_FLAG) {
-
     }
 
     if (tcphdr->tcp_flags & RTE_TCP_FIN_FLAG) {
-        stream->status = NG_TCP_STATUS_CLOSE_WAIT;
-        ng_tcp_enqueue_pkt(stream, tcphdr, tcphdr->data_off >> 4);
-
+        ng_tcp_enqueue_pkt(stream, tcphdr, (tcphdr->data_off >> 4) * 4);
         ng_tcp_enqueue_ackpkt(stream, tcphdr);
+        stream->status = NG_TCP_STATUS_LAST_ACK;//no pkt need send, tran to last ack
     }
-
-    pthread_mutex_lock(&stream->mutex);
-    pthread_cond_signal(&stream->cond);
-    pthread_mutex_unlock(&stream->mutex);
 
     return 0;
 }
 
 static int ng_tcp_handle_close_wait(struct ng_tcp_stream *stream, struct rte_tcp_hdr *tcphdr)
 {
-    if (tcphdr->tcp_flags & RTE_TCP_FIN_FLAG) {
-        if (stream->status == NG_TCP_STATUS_CLOSE_WAIT) {
+    // after send all data, tran to last ack
+    if (tcphdr->tcp_flags & RTE_TCP_ACK_FLAG) {
+        stream->status = NG_TCP_STATUS_LAST_ACK;
+    }
+    return 0;
+}
 
+static int ng_tcp_handle_last_ack(struct ng_tcp_stream *stream, struct rte_tcp_hdr *tcphdr)
+{
+    if (tcphdr->tcp_flags & RTE_TCP_ACK_FLAG) {
+        if (stream->status == NG_TCP_STATUS_LAST_ACK) {
+            if (ntohl(tcphdr->sent_seq) == stream->recv_next) {
+                stream->status = NG_TCP_STATUS_CLOSED;
+                struct ng_tcp_table *table = tcp_table_instance();
+                LL_REMOVE(stream, table->entries);
+
+                rte_ring_free(stream->sendbuf);
+                rte_ring_free(stream->recvbuf);
+                rte_free(stream);
+            }
         }
     }
     return 0;
@@ -254,20 +248,19 @@ int tcp_pkt_in(struct rte_mbuf *mbuf)
     struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(mbuf, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
     struct rte_tcp_hdr *tcphdr = (struct rte_tcp_hdr *)(iphdr + 1);
 
-    printf("tcp pkt in, sport: %d dport: %d\n", ntohs(tcphdr->src_port), ntohs(tcphdr->dst_port));
-
     uint16_t preCkSum = tcphdr->cksum;  
     tcphdr->cksum = 0;
     tcphdr->cksum = rte_ipv4_udptcp_cksum(iphdr, tcphdr);
-    printf("tcp pkt in cacl preCksum: %d, cur ckSum: %d\n", preCkSum, tcphdr->cksum);
     if (preCkSum != tcphdr->cksum) {
         printf("tcp_pkt_in checksum not correct, ckSum: %d\n", htons(tcphdr->cksum));
+        rte_pktmbuf_free(mbuf);
         return EXIT_FAILURE;
     }
 
     struct ng_tcp_stream *stream = ng_tcp_stream_search(iphdr->src_addr, iphdr->dst_addr, tcphdr->src_port, tcphdr->dst_port);
     if (stream == NULL) {
         printf("tcp_pkt_in stream not found\n");
+        rte_pktmbuf_free(mbuf);
         return EXIT_FAILURE;
     }
 
@@ -275,14 +268,17 @@ int tcp_pkt_in(struct rte_mbuf *mbuf)
         case NG_TCP_STATUS_CLOSED: //client
             break;
         case NG_TCP_STATUS_LISTEN: //server
+            printf("now in ng_tcp_handle_listen\n");
             ng_tcp_handle_listen(stream, tcphdr, iphdr);
             break;
         case NG_TCP_STATUS_SYN_SENT: //client
             break;
         case NG_TCP_STATUS_SYN_RCVD: //server
+            printf("now in NG_TCP_STATUS_SYN_RCVD\n");
             ng_tcp_handle_syn_rcvd(stream, tcphdr);
             break;
         case NG_TCP_STATUS_ESTABLISHED: //client && server
+            printf("now in NG_TCP_STATUS_ESTABLISHED\n");
             ng_tcp_handle_established(stream, tcphdr, (int)(ntohs(iphdr->total_length) - sizeof(struct rte_ipv4_hdr)));
             break;
         case NG_TCP_STATUS_FIN_WAIT_1:  //~clients
@@ -294,9 +290,12 @@ int tcp_pkt_in(struct rte_mbuf *mbuf)
         case NG_TCP_STATUS_TIME_WAIT:   //~client
             break;
         case NG_TCP_STATUS_CLOSE_WAIT: //~server
+            printf("now in NG_TCP_STATUS_CLOSE_WAIT\n");
             ng_tcp_handle_close_wait(stream, tcphdr);
             break;
         case NG_TCP_STATUS_LAST_ACK: //~server
+            printf("now in NG_TCP_STATUS_LAST_ACK\n");
+            ng_tcp_handle_last_ack(stream, tcphdr);
             break;
         default:
             printf("not found\n");
@@ -312,8 +311,11 @@ int tcp_pkt_out(struct rte_mempool *mbuf_pool)
     struct ng_tcp_stream *stream = NULL;
 
     for (stream = table->entries; stream != NULL; stream = stream->next) {
-        struct ng_tcp_fragment *fragment = NULL;
+        if (stream->sendbuf == NULL) {
+            continue;
+        }
 
+        struct ng_tcp_fragment *fragment = NULL;
         int nb_send = rte_ring_mc_dequeue(stream->sendbuf, (void **)&fragment);
         if (nb_send < 0) {
             continue;

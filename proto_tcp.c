@@ -68,13 +68,12 @@ static struct ng_tcp_stream *ng_tcp_stream_search_from_fd(int fd)
     return NULL;
 }
 
-static struct ng_tcp_stream *ng_syn_recvd_tcp_stream_from_port(uint32_t dip, int16_t dport)
+static struct ng_tcp_stream *ng_syn_recvd_tcp_stream_from_port(uint32_t dip, uint16_t dport)
 {
     struct ng_tcp_table *table = tcp_table_instance();
-
     struct ng_tcp_stream *iter = NULL;
     for (iter = table->entries; iter != NULL; iter = iter->next) {
-        if (iter->dport == dport && iter->status == NG_TCP_STATUS_SYN_RCVD && iter->dip == dip && iter->fd == -1) {
+        if (iter->dport == dport && iter->status == NG_TCP_STATUS_SYN_RCVD && iter->dip == dip) {
             return iter;
         }
     }
@@ -175,21 +174,6 @@ int ng_tcp_listen(int fd, __attribute__((unused)) int n)
         return -1;
     }
 
-    stream->sendbuf = rte_ring_create("tcp_sendbuf", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    if (stream->sendbuf == NULL) {
-        printf("init tcp_sendbuf fail: %s\n", rte_strerror(rte_errno));
-        rte_free(stream);
-        return 0;
-    }
-
-    stream->recvbuf = rte_ring_create("tcp_recvbuf", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    if (stream->recvbuf == NULL) {
-        printf("init tcp_recvbuf fail: %s\n", rte_strerror(rte_errno));
-        rte_ring_free(stream->recvbuf);
-        rte_free(stream);
-        return 0;
-    }
-
     pthread_cond_t blank_cond = PTHREAD_COND_INITIALIZER;
     rte_memcpy(&stream->cond, &blank_cond, sizeof(pthread_cond_t));
 
@@ -225,6 +209,7 @@ int ng_tcp_accept(int fd, struct sockaddr *addr, __attribute__((unused)) socklen
     saddr->sin_port = acpt->sport;
     saddr->sin_addr.s_addr = acpt->sip;
     rte_memcpy(&saddr->sin_addr.s_addr, &acpt->sip, sizeof(uint32_t));
+    acpt->status = NG_TCP_STATUS_ESTABLISHED;
 
     return acpt->fd;
 }
@@ -307,18 +292,24 @@ int ng_tcp_send(int fd, const void *buf, size_t n, __attribute__((unused)) int f
     fragment->length = n;
     length = fragment->length;
 
-    printf("tcp echo data: %s\n", fragment->data);
-
     rte_ring_mp_enqueue(stream->sendbuf, fragment);
 
     return length;
 }
 
-int ng_tcp_close (int fd)
+int ng_tcp_close(int fd)
 {
     struct ng_tcp_stream *stream = ng_tcp_stream_search_from_fd(fd);
     if (stream == NULL) {
         return -1;
+    }
+
+    if (stream->status == NG_TCP_STATUS_LISTEN) {
+        struct ng_tcp_table *table = tcp_table_instance();
+        LL_REMOVE(stream, table->entries);
+
+        rte_free(stream);
+        return 0;
     }
 
     struct ng_tcp_fragment *fragment = rte_malloc("fragment", sizeof(struct ng_tcp_fragment), 0);
@@ -332,13 +323,11 @@ int ng_tcp_close (int fd)
     fragment->dport = stream->sport;
     fragment->seqnum = stream->snd_next;
     fragment->acknum = stream->recv_next;
-    fragment->tcp_flags = RTE_TCP_FIN_FLAG;
+    fragment->tcp_flags = RTE_TCP_FIN_FLAG | RTE_TCP_ACK_FLAG;
     fragment->win = TCP_INITIAL_WINDOW;
     fragment->hdrlen_off = 0x50;
 
     rte_ring_mp_enqueue(stream->sendbuf, fragment);
-    stream->status = NG_TCP_STATUS_LAST_ACK;
-
     reset_fd_from_bitmap(fd);
 
     return 0;
@@ -346,7 +335,7 @@ int ng_tcp_close (int fd)
 
 int tcp_server_entry(__attribute__((unused)) void *arg) 
 {
-    int listenfd = socket(AF_INET, SOCK_STREAM, 0);
+    int listenfd = ng_tcp_socket(AF_INET, SOCK_STREAM, 0);
     if (listenfd == -1) {
         return -1;
     }
@@ -357,31 +346,33 @@ int tcp_server_entry(__attribute__((unused)) void *arg)
     memset(&serveraddr, 0, sizeof(serveraddr));
     serveraddr.sin_family = AF_INET;
     serveraddr.sin_addr.s_addr = gLocalIP;
-    serveraddr.sin_port = htons(9999);
-    bind(listenfd, (const struct sockaddr *)&serveraddr, sizeof(serveraddr));
+    serveraddr.sin_port = htons(8888);
+    ng_tcp_bind(listenfd, (const struct sockaddr *)&serveraddr, sizeof(serveraddr));
 
-    listen(listenfd, 10);
+    ng_tcp_listen(listenfd, 10);
 
     struct sockaddr_in client;
     memset(&client, 0, sizeof(client));
     socklen_t len = sizeof(client);
-    
-    int connfd = accept(listenfd, (struct sockaddr *)&client, &len);
 
     char buf[BUFFER_SIZE] = {0};
     while (1) {
 
-        int n = recv(connfd, buf, BUFFER_SIZE, 0);
-        if (n > 0) {
-            
-            send(connfd, buf, n, 0);
+        int connfd = ng_tcp_accept(listenfd, (struct sockaddr *)&client, &len);
 
-        } else if (n == 0) {
-            close(connfd);
-        } else { //nonblock
-
+        while (1) {
+            int n = ng_tcp_recv(connfd, buf, BUFFER_SIZE, 0);
+            if (n > 0) {
+                printf("receive from tcp: %s\n", buf);
+                ng_tcp_send(connfd, buf, n, 0);
+            } else if (n == 0) {
+                ng_tcp_close(connfd);
+                break;
+            } else { //nonblock
+                break;
+            }
         }
     }
 
-    close(listenfd);
+    ng_tcp_close(listenfd);
 }
