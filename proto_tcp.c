@@ -217,7 +217,6 @@ int ng_tcp_accept(int fd, struct sockaddr *addr, __attribute__((unused)) socklen
 int ng_tcp_recv(int fd, void *buf, size_t n, __attribute__((unused)) int flags)
 {
     int length = 0;
-
     struct ng_tcp_stream *stream = ng_tcp_stream_search_from_fd(fd);
     if (stream == NULL) {
         return -1;
