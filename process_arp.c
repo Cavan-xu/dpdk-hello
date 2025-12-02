@@ -120,7 +120,6 @@ int arp_response_pkt_in(struct rte_mbuf *mbuf)
         }
     }
 
-
     struct arp_entry *iter;
     for (iter = table->entries; iter != NULL; iter = iter->next) {
         struct in_addr addr;
@@ -151,7 +150,6 @@ int arp_pkt_in(struct rte_mempool *mbuf_pool, struct rte_mbuf *mbuf)
         rte_pktmbuf_free(mbuf);
         return 0;
     }
-
 
     if (arphdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)) {
         arp_request_pkt_in(mbuf_pool, mbuf);

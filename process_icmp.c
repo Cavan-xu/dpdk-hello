@@ -82,7 +82,6 @@ struct rte_mbuf * ng_icmp_send(struct rte_mempool *mbufpool, uint8_t *dst_mac, u
     return mbuf;
 }
 
-
 int icmp_pkt_in(struct rte_mempool *mbuf_pool, struct rte_mbuf *mbuf)
 {
     struct rte_ether_hdr *ehdr =  rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr*);

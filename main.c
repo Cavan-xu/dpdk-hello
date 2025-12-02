@@ -16,6 +16,7 @@
 #include "process_arp.h"
 #include "process_icmp.h"
 #include "util_ring.h"
+#include "kni.h"
 
 #define NUM_MBUFS (4096-1)
 #define BRUST_SIZE 32
@@ -65,6 +66,8 @@ static void ng_init_port(struct rte_mempool *mbuf_pool)
     if (rte_eth_dev_start(gDpdkPortId) < 0 ) {
         rte_exit(EXIT_FAILURE, "start port fail\n");
     }
+
+    rte_eth_promiscuous_enable(gDpdkPortId);
 }
 
 static int pkt_process(void *arg)
@@ -124,6 +127,7 @@ int main(int argc, char *argv[])
     }
 
     ng_init_port(mbuf_pool);
+    ng_init_kni(mbuf_pool);
 
     rte_eth_macaddr_get(gDpdkPortId, (struct rte_ether_addr *)gSrcMac);
     char mac_str[18];

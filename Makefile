@@ -5,7 +5,7 @@
 APP = demo
 
 # all source are stored in SRCS-y
-SRCS-y := main.c process_arp.c process_icmp.c process_udp.c process_tcp.c proto_udp.c proto_tcp.c util_ring.c util_timer.c common.c
+SRCS-y := main.c process_arp.c process_icmp.c process_udp.c process_tcp.c proto_udp.c proto_tcp.c util_ring.c util_timer.c common.c kni.c
 # Build using pkg-config variables if possible
 ifeq ($(shell pkg-config --exists libdpdk && echo 0),0)
 
