@@ -44,6 +44,27 @@ uint8_t *ng_get_dst_mac(uint32_t dip)
     return NULL;
 }
 
+void ng_add_mac(uint32_t sip, uint8_t *mac)
+{
+    struct arp_table *table = arp_table_instance();
+    uint8_t * hwaddr = ng_get_dst_mac(sip);
+    if (hwaddr != NULL) {
+        return;
+    }
+
+    struct arp_entry *entry = rte_malloc("arp entry", sizeof(struct arp_entry), 0);
+    if (entry) {
+        memset(entry, 0, sizeof(struct arp_entry));
+        entry->ip = sip;
+
+        rte_memcpy(entry->hwaddr, mac, RTE_ETHER_ADDR_LEN);
+        entry->status = ARP_ENTRY_STATUS_DYNAMIC;
+
+        LL_ADD(entry, table->entries);
+        table->count++;
+    }
+}
+
 void create_eth_arp(uint8_t *msg, uint16_t op_code, uint8_t *dst_mac, uint32_t *sip, uint32_t *dip)
 {
     struct rte_ether_hdr *eth = (struct rte_ether_hdr *)msg;
@@ -105,19 +126,9 @@ int arp_response_pkt_in(struct rte_mbuf *mbuf)
 {
     struct rte_arp_hdr *arphdr = rte_pktmbuf_mtod_offset(mbuf, struct rte_arp_hdr *, sizeof(struct rte_ether_hdr));
     struct arp_table *table = arp_table_instance();
-    uint8_t * hwaddr = ng_get_dst_mac(arphdr->arp_data.arp_sip);
+    uint8_t *hwaddr = ng_get_dst_mac(arphdr->arp_data.arp_sip);
     if (hwaddr == NULL) {
-        struct arp_entry *entry = rte_malloc("arp entry", sizeof(struct arp_entry), 0);
-        if (entry) {
-            memset(entry, 0, sizeof(struct arp_entry));
-            entry->ip = arphdr->arp_data.arp_sip;
-
-            rte_memcpy(entry->hwaddr, arphdr->arp_data.arp_sha.addr_bytes, RTE_ETHER_ADDR_LEN);
-            entry->status = ARP_ENTRY_STATUS_DYNAMIC;
-
-            LL_ADD(entry, table->entries);
-            table->count ++;
-        }
+        ng_add_mac(arphdr->arp_data.arp_sip, arphdr->arp_data.arp_sha.addr_bytes);
     }
 
     struct arp_entry *iter;

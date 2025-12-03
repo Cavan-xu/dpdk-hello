@@ -10,6 +10,14 @@
 extern int gDpdkPortId;
 extern uint8_t gSrcMac[RTE_ETHER_ADDR_LEN];
 
+struct rte_kni *kni_handler = NULL;
+
+struct rte_kni *get_global_kni(void)
+{
+    return kni_handler;
+}
+
+// rte_kni_handle_request call
 static int ng_config_network_if(uint16_t port_id, uint8_t if_up)
 {
     if (!rte_eth_dev_is_valid_port(port_id)) {
@@ -38,7 +46,6 @@ int ng_init_kni(struct rte_mempool *mbuf_pool)
         return -1;
     }
 
-    struct rte_kni *kni_handler = NULL;
     struct rte_kni_conf conf = {};
     memset(&conf, 0, sizeof(struct rte_kni_conf));
     sprintf(conf.name, "vEth%d", gDpdkPortId);

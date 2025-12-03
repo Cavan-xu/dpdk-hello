@@ -1,11 +1,13 @@
 #include <stdio.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
 #include <rte_eal.h>
 #include <rte_mbuf.h>
 #include <rte_ethdev.h>
 #include <rte_timer.h>
-#include <arpa/inet.h>
 #include <rte_ring.h>
-#include <unistd.h>
+#include <rte_kni.h>
 
 #include "util_linknode.h"
 #include "util_timer.h"
@@ -81,31 +83,24 @@ static int pkt_process(void *arg)
 
         unsigned i = 0;
         for (i = 0; i < num_recvd; i++) {
-            struct rte_ether_hdr *ehdr =  rte_pktmbuf_mtod(mbufs[i], struct rte_ether_hdr*);
-            if (ehdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
-                arp_pkt_in(mbuf_pool, mbufs[i]);
-                continue;
+            struct rte_ether_hdr *ehdr = rte_pktmbuf_mtod(mbufs[i], struct rte_ether_hdr*);
+            if (ehdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+                struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(mbufs[i], struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
+
+                ng_add_mac(iphdr->src_addr, ehdr->s_addr.addr_bytes);
+
+                if (iphdr->next_proto_id == IPPROTO_UDP) {
+                    udp_pkt_in(mbufs[i]);
+                    continue;
+                }
+                if (iphdr->next_proto_id == IPPROTO_TCP) {
+                    tcp_pkt_in(mbufs[i]);
+                    continue;
+                }
             }
 
-            if (ehdr->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
-                continue;
-            }
-
-            struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(mbufs[i], struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
-            if (iphdr->next_proto_id == IPPROTO_UDP) {
-                udp_pkt_in(mbufs[i]);
-                continue;
-            }
-
-            if (iphdr->next_proto_id == IPPROTO_ICMP) {
-                icmp_pkt_in(mbuf_pool, mbufs[i]);
-                continue;
-            }
-
-            if (iphdr->next_proto_id == IPPROTO_TCP) {
-                tcp_pkt_in(mbufs[i]);
-                continue;
-            }
+            rte_kni_tx_burst(get_global_kni(), &mbufs[i], 1);
+            rte_kni_handle_request(get_global_kni());
         }
         
         udp_pkt_out(mbuf_pool);
@@ -126,13 +121,13 @@ int main(int argc, char *argv[])
         rte_exit(EXIT_FAILURE, "error with mbuf_pool init\n");
     }
 
-    ng_init_port(mbuf_pool);
-    ng_init_kni(mbuf_pool);
-
     rte_eth_macaddr_get(gDpdkPortId, (struct rte_ether_addr *)gSrcMac);
     char mac_str[18];
     rte_ether_format_addr(mac_str, sizeof(mac_str), (struct rte_ether_addr *)gSrcMac);
     printf("eth0 mac is: %s\n", mac_str);
+
+    ng_init_port(mbuf_pool);
+    ng_init_kni(mbuf_pool);
 
     rte_timer_subsystem_init();
 

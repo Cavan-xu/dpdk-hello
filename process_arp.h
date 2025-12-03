@@ -28,6 +28,8 @@ struct arp_table *arp_table_instance(void);
 
 uint8_t *ng_get_dst_mac(uint32_t dip);
 
+void ng_add_mac(uint32_t sip, uint8_t *mac);
+
 void create_eth_arp(uint8_t *msg, uint16_t op_code, uint8_t *dst_mac, uint32_t *sip, uint32_t *dip);
 
 struct rte_mbuf *ng_arp_send(struct rte_mempool *mbufpool, uint16_t op_code, uint8_t *dst_mac, uint32_t *sip, uint32_t *dip);
