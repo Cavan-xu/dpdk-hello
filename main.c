@@ -99,12 +99,12 @@ static int pkt_process(void *arg)
                 }
             }
 
-            rte_kni_tx_burst(get_global_kni(), &mbufs[i], 1);
-            rte_kni_handle_request(get_global_kni());
+            kni_pkt_in(mbufs[i]);
         }
         
         udp_pkt_out(mbuf_pool);
         tcp_pkt_out(mbuf_pool);
+        kni_pkt_out();
     }
 
     return 0;
